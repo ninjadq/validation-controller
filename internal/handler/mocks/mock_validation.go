@@ -86,6 +86,21 @@ func (mr *MockValidationHandlerInterfaceMockRecorder) EnsurePodExists(ctx any) *
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EnsurePodExists", reflect.TypeOf((*MockValidationHandlerInterface)(nil).EnsurePodExists), ctx)
 }
 
+// EnsureSpecCurrent mocks base method.
+func (m *MockValidationHandlerInterface) EnsureSpecCurrent(ctx context.Context) (reconciler.OperationResult, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "EnsureSpecCurrent", ctx)
+	ret0, _ := ret[0].(reconciler.OperationResult)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// EnsureSpecCurrent indicates an expected call of EnsureSpecCurrent.
+func (mr *MockValidationHandlerInterfaceMockRecorder) EnsureSpecCurrent(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EnsureSpecCurrent", reflect.TypeOf((*MockValidationHandlerInterface)(nil).EnsureSpecCurrent), ctx)
+}
+
 // HandleRetry mocks base method.
 func (m *MockValidationHandlerInterface) HandleRetry(ctx context.Context) (reconciler.OperationResult, error) {
 	m.ctrl.T.Helper()

@@ -86,6 +86,7 @@ var _ = Describe("ValidationReconciler", func() {
 			Expect(k8sClient.Create(ctx, validation)).To(Succeed())
 
 			mockH.EXPECT().EnsureInitialized(gomock.Any()).Return(reconcilerutil.ContinueOperationResult(), nil)
+			mockH.EXPECT().EnsureSpecCurrent(gomock.Any()).Return(reconcilerutil.ContinueOperationResult(), nil)
 			mockH.EXPECT().EnsurePodExists(gomock.Any()).Return(reconcilerutil.ContinueOperationResult(), nil)
 			mockH.EXPECT().CheckPodStatus(gomock.Any()).Return(reconcilerutil.ContinueOperationResult(), nil)
 			mockH.EXPECT().HandleRetry(gomock.Any()).Return(reconcilerutil.ContinueOperationResult(), nil)
@@ -203,6 +204,7 @@ var _ = Describe("ValidationReconciler", func() {
 
 		It("should requeue when an operation requests requeue", func() {
 			mockH.EXPECT().EnsureInitialized(gomock.Any()).Return(reconcilerutil.ContinueOperationResult(), nil)
+			mockH.EXPECT().EnsureSpecCurrent(gomock.Any()).Return(reconcilerutil.ContinueOperationResult(), nil)
 			mockH.EXPECT().EnsurePodExists(gomock.Any()).Return(
 				reconcilerutil.OperationResult{RequeueRequest: true, RequeueDelay: reconcilerutil.DefaultRequeueDelay},
 				nil,

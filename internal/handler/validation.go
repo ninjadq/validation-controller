@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 
 	"github.com/go-logr/logr"
@@ -25,6 +27,7 @@ type ValidationHandlerContextKey struct{}
 // ValidationHandlerInterface defines the lifecycle operations for a Validation resource.
 type ValidationHandlerInterface interface {
 	EnsureInitialized(ctx context.Context) (reconciler.OperationResult, error)
+	EnsureSpecCurrent(ctx context.Context) (reconciler.OperationResult, error)
 	EnsurePodExists(ctx context.Context) (reconciler.OperationResult, error)
 	CheckPodStatus(ctx context.Context) (reconciler.OperationResult, error)
 	HandleRetry(ctx context.Context) (reconciler.OperationResult, error)
@@ -74,6 +77,8 @@ func (h *ValidationHandler) EnsureInitialized(ctx context.Context) (reconciler.O
 	h.setCondition(v1alpha1.ValidationConditionTestCompleted, metav1.ConditionFalse, "Initializing", "Validation is being initialized", gen)
 	h.setCondition(v1alpha1.ValidationConditionTestPassed, metav1.ConditionFalse, "Initializing", "Validation is being initialized", gen)
 
+	h.validation.Status.SpecHash = h.computeSpecHash()
+
 	if err := h.client.Status().Update(ctx, h.validation); err != nil {
 		return reconciler.RequeueWithError(fmt.Errorf("updating status during initialization: %w", err))
 	}
@@ -81,6 +86,65 @@ func (h *ValidationHandler) EnsureInitialized(ctx context.Context) (reconciler.O
 	h.recorder.Event(h.validation, corev1.EventTypeNormal, "Initialized", "Validation resource initialized")
 
 	return reconciler.ContinueProcessing()
+}
+
+// EnsureSpecCurrent detects spec changes and resets the validation if the spec has changed.
+func (h *ValidationHandler) EnsureSpecCurrent(ctx context.Context) (reconciler.OperationResult, error) {
+	currentHash := h.computeSpecHash()
+
+	// First run or hash not yet stored — just save it.
+	if h.validation.Status.SpecHash == "" {
+		h.validation.Status.SpecHash = currentHash
+		if err := h.client.Status().Update(ctx, h.validation); err != nil {
+			return reconciler.RequeueWithError(fmt.Errorf("storing initial spec hash: %w", err))
+		}
+		return reconciler.ContinueProcessing()
+	}
+
+	// No change — continue.
+	if h.validation.Status.SpecHash == currentHash {
+		return reconciler.ContinueProcessing()
+	}
+
+	// Spec changed — delete existing pod if present.
+	h.logger.Info("Spec change detected, resetting validation",
+		"oldHash", h.validation.Status.SpecHash,
+		"newHash", currentHash,
+	)
+
+	if h.validation.Status.PodName != "" {
+		pod := &corev1.Pod{}
+		err := h.client.Get(ctx, client.ObjectKey{
+			Namespace: h.validation.Namespace,
+			Name:      h.validation.Status.PodName,
+		}, pod)
+		if err == nil {
+			if delErr := h.client.Delete(ctx, pod); delErr != nil && !apierror.IsNotFound(delErr) {
+				return reconciler.RequeueWithError(fmt.Errorf("deleting pod after spec change: %w", delErr))
+			}
+		} else if !apierror.IsNotFound(err) {
+			return reconciler.RequeueWithError(fmt.Errorf("getting pod for spec change cleanup: %w", err))
+		}
+	}
+
+	// Reset status.
+	h.validation.Status.Phase = v1alpha1.ValidationPhasePending
+	h.validation.Status.PodName = ""
+	h.validation.Status.RetryCount = 0
+	h.validation.Status.SpecHash = currentHash
+
+	gen := h.validation.Generation
+	h.setCondition(v1alpha1.ValidationConditionPodCreated, metav1.ConditionFalse, "SpecChanged", "Spec changed, restarting validation", gen)
+	h.setCondition(v1alpha1.ValidationConditionTestCompleted, metav1.ConditionFalse, "SpecChanged", "Spec changed, restarting validation", gen)
+	h.setCondition(v1alpha1.ValidationConditionTestPassed, metav1.ConditionFalse, "SpecChanged", "Spec changed, restarting validation", gen)
+
+	if err := h.client.Status().Update(ctx, h.validation); err != nil {
+		return reconciler.RequeueWithError(fmt.Errorf("updating status after spec change: %w", err))
+	}
+
+	h.recorder.Event(h.validation, corev1.EventTypeNormal, "SpecChanged", "Spec changed, restarting validation")
+
+	return reconciler.Requeue()
 }
 
 // EnsurePodExists creates a validation pod if the Validation is in Pending phase.
@@ -311,4 +375,19 @@ func (h *ValidationHandler) generatePodName() string {
 		prefix = prefix[:maxLen-len(suffix)]
 	}
 	return prefix + suffix
+}
+
+// computeSpecHash computes a hash of the fields that should trigger a reset when changed.
+// Only Container and PrUrl are included — MaxRetries is intentionally excluded.
+func (h *ValidationHandler) computeSpecHash() string {
+	data := struct {
+		Container corev1.Container `json:"container"`
+		PrUrl     string           `json:"prUrl"`
+	}{
+		Container: h.validation.Spec.Container,
+		PrUrl:     h.validation.Spec.PrUrl,
+	}
+	b, _ := json.Marshal(data)
+	sum := sha256.Sum256(b)
+	return fmt.Sprintf("%x", sum[:8])
 }

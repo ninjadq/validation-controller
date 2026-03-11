@@ -120,6 +120,200 @@ func TestEnsureInitialized_AlreadyInitialized(t *testing.T) {
 	}
 }
 
+// --- EnsureSpecCurrent ---
+
+func TestEnsureSpecCurrent_FirstRun(t *testing.T) {
+	validation := newTestValidation("spec-first", "default")
+	validation.Status.Phase = v1alpha1.ValidationPhasePending
+	validation.Status.SpecHash = ""
+
+	h, fakeClient, _ := newHandler(validation)
+
+	result, err := h.EnsureSpecCurrent(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.CancelRequest || result.RequeueRequest {
+		t.Fatal("expected ContinueProcessing")
+	}
+
+	updated := &v1alpha1.Validation{}
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(validation), updated); err != nil {
+		t.Fatalf("failed to get updated validation: %v", err)
+	}
+	if updated.Status.SpecHash == "" {
+		t.Error("expected specHash to be set, got empty")
+	}
+}
+
+func TestEnsureSpecCurrent_NoChange(t *testing.T) {
+	validation := newTestValidation("spec-same", "default")
+	validation.Status.Phase = v1alpha1.ValidationPhaseRunning
+	validation.Status.PodName = "spec-same-run-0"
+
+	h, _, _ := newHandler(validation)
+	hash := h.computeSpecHash()
+	validation.Status.SpecHash = hash
+
+	h, _, _ = newHandler(validation)
+
+	result, err := h.EnsureSpecCurrent(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.CancelRequest || result.RequeueRequest {
+		t.Fatal("expected ContinueProcessing")
+	}
+}
+
+func TestEnsureSpecCurrent_SpecChanged_Running(t *testing.T) {
+	validation := newTestValidation("spec-changed", "default")
+	validation.Status.Phase = v1alpha1.ValidationPhaseRunning
+	validation.Status.PodName = "spec-changed-run-0"
+	validation.Status.SpecHash = "old-hash-value"
+	validation.Status.RetryCount = 2
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "spec-changed-run-0",
+			Namespace: "default",
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Containers:    []corev1.Container{{Name: "ci-runner", Image: "busybox:latest"}},
+		},
+	}
+
+	s := newScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&v1alpha1.Validation{}).
+		WithObjects(validation, pod).
+		Build()
+	recorder := record.NewFakeRecorder(10)
+	h := &ValidationHandler{
+		validation: validation,
+		logger:     logr.Discard(),
+		client:     fakeClient,
+		recorder:   recorder,
+	}
+
+	result, err := h.EnsureSpecCurrent(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.RequeueRequest {
+		t.Fatal("expected Requeue after spec change")
+	}
+
+	updated := &v1alpha1.Validation{}
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(validation), updated); err != nil {
+		t.Fatalf("failed to get updated validation: %v", err)
+	}
+	if updated.Status.Phase != v1alpha1.ValidationPhasePending {
+		t.Errorf("expected phase Pending, got %q", updated.Status.Phase)
+	}
+	if updated.Status.PodName != "" {
+		t.Errorf("expected PodName cleared, got %q", updated.Status.PodName)
+	}
+	if updated.Status.RetryCount != 0 {
+		t.Errorf("expected RetryCount reset to 0, got %d", updated.Status.RetryCount)
+	}
+	if updated.Status.SpecHash == "old-hash-value" {
+		t.Error("expected specHash to be updated")
+	}
+	if updated.Status.SpecHash == "" {
+		t.Error("expected specHash to be set, got empty")
+	}
+
+	deletedPod := &corev1.Pod{}
+	err = fakeClient.Get(context.Background(), client.ObjectKey{Name: pod.Name, Namespace: pod.Namespace}, deletedPod)
+	if err == nil {
+		t.Error("expected pod to be deleted, but it still exists")
+	}
+}
+
+func TestEnsureSpecCurrent_SpecChanged_Succeeded(t *testing.T) {
+	validation := newTestValidation("spec-term", "default")
+	validation.Status.Phase = v1alpha1.ValidationPhaseSucceeded
+	validation.Status.PodName = "spec-term-run-0"
+	validation.Status.SpecHash = "old-hash-value"
+	validation.Status.RetryCount = 1
+
+	h, fakeClient, _ := newHandler(validation)
+
+	result, err := h.EnsureSpecCurrent(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.RequeueRequest {
+		t.Fatal("expected Requeue after spec change on terminal phase")
+	}
+
+	updated := &v1alpha1.Validation{}
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(validation), updated); err != nil {
+		t.Fatalf("failed to get updated validation: %v", err)
+	}
+	if updated.Status.Phase != v1alpha1.ValidationPhasePending {
+		t.Errorf("expected phase Pending, got %q", updated.Status.Phase)
+	}
+	if updated.Status.RetryCount != 0 {
+		t.Errorf("expected RetryCount reset to 0, got %d", updated.Status.RetryCount)
+	}
+}
+
+func TestEnsureSpecCurrent_ContainerImageChange(t *testing.T) {
+	validation := newTestValidation("spec-img", "default")
+	validation.Status.Phase = v1alpha1.ValidationPhaseRunning
+	validation.Status.PodName = "spec-img-run-0"
+
+	h, _, _ := newHandler(validation)
+	oldHash := h.computeSpecHash()
+	validation.Status.SpecHash = oldHash
+
+	validation.Spec.Container.Image = "alpine:3.18"
+
+	h, fakeClient, _ := newHandler(validation)
+
+	result, err := h.EnsureSpecCurrent(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.RequeueRequest {
+		t.Fatal("expected Requeue after container image change")
+	}
+
+	updated := &v1alpha1.Validation{}
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(validation), updated); err != nil {
+		t.Fatalf("failed to get updated validation: %v", err)
+	}
+	if updated.Status.Phase != v1alpha1.ValidationPhasePending {
+		t.Errorf("expected phase Pending, got %q", updated.Status.Phase)
+	}
+}
+
+func TestEnsureSpecCurrent_MaxRetriesChange_NoReset(t *testing.T) {
+	validation := newTestValidation("spec-retries", "default")
+	validation.Status.Phase = v1alpha1.ValidationPhaseRunning
+	validation.Status.PodName = "spec-retries-run-0"
+
+	h, _, _ := newHandler(validation)
+	hash := h.computeSpecHash()
+	validation.Status.SpecHash = hash
+
+	validation.Spec.MaxRetries = 10
+
+	h, _, _ = newHandler(validation)
+
+	result, err := h.EnsureSpecCurrent(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.CancelRequest || result.RequeueRequest {
+		t.Fatal("expected ContinueProcessing — maxRetries change should not trigger reset")
+	}
+}
+
 // --- EnsurePodExists ---
 
 func TestEnsurePodExists(t *testing.T) {

@@ -55,6 +55,7 @@ type ValidationStatus struct {
 	Phase      string             `json:"phase"`
 	RetryCount int32              `json:"retryCount"`
 	PodName    string             `json:"podName"`
+	SpecHash   string             `json:"specHash,omitempty"`
 	Conditions []metav1.Condition `json:"conditions"`
 }
 

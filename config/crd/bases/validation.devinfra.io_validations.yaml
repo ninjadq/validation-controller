@@ -771,6 +771,8 @@ spec:
               retryCount:
                 format: int32
                 type: integer
+              specHash:
+                type: string
             required:
             - conditions
             - phase
