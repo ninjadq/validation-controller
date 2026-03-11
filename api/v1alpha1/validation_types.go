@@ -35,6 +35,9 @@ const (
 	ValidationConditionPodCreated    = "PodCreated"
 	ValidationConditionTestCompleted = "TestCompleted"
 	ValidationConditionTestPassed    = "TestPassed"
+
+	// Annotation for deferred pod cleanup
+	ValidationAnnotationCleanupAfter = "validation.devinfra.io/cleanup-after"
 )
 
 // ValidationSpec defines the desired state of Validation.
