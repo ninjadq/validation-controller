@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -282,8 +283,22 @@ func (h *ValidationHandler) CheckPodStatus(ctx context.Context) (reconciler.Oper
 
 		h.validation.Status.Phase = v1alpha1.ValidationPhaseFailed
 
-		if err := h.client.Delete(ctx, pod); err != nil && !apierror.IsNotFound(err) {
-			return reconciler.RequeueWithError(fmt.Errorf("deleting failed pod %s: %w", podName, err))
+		retriesExhausted := h.validation.Status.RetryCount >= h.validation.Spec.MaxRetries
+		if retriesExhausted {
+			// Keep the pod for debugging — annotate with a 24h cleanup deadline.
+			if pod.Annotations == nil {
+				pod.Annotations = make(map[string]string)
+			}
+			cleanupTime := time.Now().Add(24 * time.Hour).Format(time.RFC3339)
+			pod.Annotations[v1alpha1.ValidationAnnotationCleanupAfter] = cleanupTime
+			if err := h.client.Update(ctx, pod); err != nil && !apierror.IsNotFound(err) {
+				return reconciler.RequeueWithError(fmt.Errorf("annotating failed pod %s for deferred cleanup: %w", podName, err))
+			}
+			h.logger.Info("Retaining failed pod for debugging", "pod", podName, "cleanupAfter", cleanupTime)
+		} else {
+			if err := h.client.Delete(ctx, pod); err != nil && !apierror.IsNotFound(err) {
+				return reconciler.RequeueWithError(fmt.Errorf("deleting failed pod %s: %w", podName, err))
+			}
 		}
 
 		if err := h.client.Status().Update(ctx, h.validation); err != nil {

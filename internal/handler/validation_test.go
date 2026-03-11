@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -584,6 +585,161 @@ func TestCheckPodStatus_Failed(t *testing.T) {
 	err = fakeClient.Get(context.Background(), client.ObjectKey{Name: pod.Name, Namespace: pod.Namespace}, deletedPod)
 	if err == nil {
 		t.Error("expected pod to be deleted, but it still exists")
+	}
+}
+
+func TestCheckPodStatus_Failed_RetainsPodWhenRetriesExhausted(t *testing.T) {
+	validation := newTestValidation("check-fail-retain", "default")
+	validation.Status.Phase = v1alpha1.ValidationPhaseRunning
+	validation.Status.PodName = "check-fail-retain-run-3"
+	validation.Status.RetryCount = 3
+	validation.Spec.MaxRetries = 3
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "check-fail-retain-run-3",
+			Namespace: "default",
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodFailed,
+			ContainerStatuses: []corev1.ContainerStatus{
+				{
+					Name: "ci-runner",
+					State: corev1.ContainerState{
+						Terminated: &corev1.ContainerStateTerminated{
+							ExitCode: 1,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	s := newScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&v1alpha1.Validation{}).
+		WithObjects(validation, pod).
+		Build()
+	recorder := record.NewFakeRecorder(10)
+	h := &ValidationHandler{
+		validation: validation,
+		logger:     logr.Discard(),
+		client:     fakeClient,
+		recorder:   recorder,
+	}
+
+	result, err := h.CheckPodStatus(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.CancelRequest || result.RequeueRequest {
+		t.Fatal("expected ContinueProcessing")
+	}
+
+	// Verify status updated to Failed.
+	updated := &v1alpha1.Validation{}
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(validation), updated); err != nil {
+		t.Fatalf("failed to get updated validation: %v", err)
+	}
+	if updated.Status.Phase != v1alpha1.ValidationPhaseFailed {
+		t.Errorf("expected phase %q, got %q", v1alpha1.ValidationPhaseFailed, updated.Status.Phase)
+	}
+
+	assertCondition(t, updated.Status.Conditions, v1alpha1.ValidationConditionTestCompleted, metav1.ConditionTrue)
+	assertCondition(t, updated.Status.Conditions, v1alpha1.ValidationConditionTestPassed, metav1.ConditionFalse)
+
+	// Pod should NOT be deleted — retries are exhausted, keep for debugging.
+	retainedPod := &corev1.Pod{}
+	err = fakeClient.Get(context.Background(), client.ObjectKey{Name: pod.Name, Namespace: pod.Namespace}, retainedPod)
+	if err != nil {
+		t.Fatalf("expected pod to be retained for debugging, but got error: %v", err)
+	}
+
+	// Pod should have the cleanup-after annotation.
+	cleanupAfter, ok := retainedPod.Annotations[v1alpha1.ValidationAnnotationCleanupAfter]
+	if !ok {
+		t.Fatal("expected cleanup-after annotation on retained pod")
+	}
+
+	// Parse the annotation value and verify it is roughly 24h from now.
+	cleanupTime, err := time.Parse(time.RFC3339, cleanupAfter)
+	if err != nil {
+		t.Fatalf("failed to parse cleanup-after annotation %q: %v", cleanupAfter, err)
+	}
+	expectedMin := time.Now().Add(23 * time.Hour)
+	expectedMax := time.Now().Add(25 * time.Hour)
+	if cleanupTime.Before(expectedMin) || cleanupTime.After(expectedMax) {
+		t.Errorf("cleanup-after time %v is not within 23-25 hours from now", cleanupTime)
+	}
+}
+
+func TestCheckPodStatus_Failed_DeletesPodWhenRetriesRemain(t *testing.T) {
+	validation := newTestValidation("check-fail-delete", "default")
+	validation.Status.Phase = v1alpha1.ValidationPhaseRunning
+	validation.Status.PodName = "check-fail-delete-run-0"
+	validation.Status.RetryCount = 0
+	validation.Spec.MaxRetries = 3
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "check-fail-delete-run-0",
+			Namespace: "default",
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodFailed,
+			ContainerStatuses: []corev1.ContainerStatus{
+				{
+					Name: "ci-runner",
+					State: corev1.ContainerState{
+						Terminated: &corev1.ContainerStateTerminated{
+							ExitCode: 1,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	s := newScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&v1alpha1.Validation{}).
+		WithObjects(validation, pod).
+		Build()
+	recorder := record.NewFakeRecorder(10)
+	h := &ValidationHandler{
+		validation: validation,
+		logger:     logr.Discard(),
+		client:     fakeClient,
+		recorder:   recorder,
+	}
+
+	result, err := h.CheckPodStatus(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.CancelRequest || result.RequeueRequest {
+		t.Fatal("expected ContinueProcessing")
+	}
+
+	// Verify status updated to Failed.
+	updated := &v1alpha1.Validation{}
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(validation), updated); err != nil {
+		t.Fatalf("failed to get updated validation: %v", err)
+	}
+	if updated.Status.Phase != v1alpha1.ValidationPhaseFailed {
+		t.Errorf("expected phase %q, got %q", v1alpha1.ValidationPhaseFailed, updated.Status.Phase)
+	}
+
+	assertCondition(t, updated.Status.Conditions, v1alpha1.ValidationConditionTestCompleted, metav1.ConditionTrue)
+	assertCondition(t, updated.Status.Conditions, v1alpha1.ValidationConditionTestPassed, metav1.ConditionFalse)
+
+	// Pod SHOULD be deleted — retries remain.
+	deletedPod := &corev1.Pod{}
+	err = fakeClient.Get(context.Background(), client.ObjectKey{Name: pod.Name, Namespace: pod.Namespace}, deletedPod)
+	if err == nil {
+		t.Error("expected pod to be deleted (retries remain), but it still exists")
 	}
 }
 
