@@ -1,0 +1,23 @@
+# permissions for end users to view Validation resources.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: validation-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: validation-viewer-role
+rules:
+- apiGroups:
+  - validation.devinfra.io
+  resources:
+  - validations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - validation.devinfra.io
+  resources:
+  - validations/status
+  verbs:
+  - get

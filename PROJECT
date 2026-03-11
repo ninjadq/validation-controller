@@ -1,0 +1,16 @@
+domain: devinfra.io
+layout:
+- go.kubebuilder.io/v4
+projectName: validation-controller
+repo: github.com/validation-controller
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: devinfra.io
+  group: validation
+  kind: Validation
+  path: github.com/validation-controller/api/v1alpha1
+  version: v1alpha1
+version: "3"
