@@ -28,6 +28,7 @@ type ValidationHandlerContextKey struct{}
 // ValidationHandlerInterface defines the lifecycle operations for a Validation resource.
 type ValidationHandlerInterface interface {
 	EnsureInitialized(ctx context.Context) (reconciler.OperationResult, error)
+	CleanupExpiredPod(ctx context.Context) (reconciler.OperationResult, error)
 	EnsureSpecCurrent(ctx context.Context) (reconciler.OperationResult, error)
 	EnsurePodExists(ctx context.Context) (reconciler.OperationResult, error)
 	CheckPodStatus(ctx context.Context) (reconciler.OperationResult, error)
@@ -85,6 +86,60 @@ func (h *ValidationHandler) EnsureInitialized(ctx context.Context) (reconciler.O
 	}
 
 	h.recorder.Event(h.validation, corev1.EventTypeNormal, "Initialized", "Validation resource initialized")
+
+	return reconciler.ContinueProcessing()
+}
+
+// CleanupExpiredPod deletes a retained failed pod once its 24h debug window has expired.
+func (h *ValidationHandler) CleanupExpiredPod(ctx context.Context) (reconciler.OperationResult, error) {
+	if h.validation.Status.Phase != v1alpha1.ValidationPhaseFailed {
+		return reconciler.ContinueProcessing()
+	}
+
+	podName := h.validation.Status.PodName
+	if podName == "" {
+		return reconciler.ContinueProcessing()
+	}
+
+	pod := &corev1.Pod{}
+	err := h.client.Get(ctx, client.ObjectKey{
+		Namespace: h.validation.Namespace,
+		Name:      podName,
+	}, pod)
+
+	if apierror.IsNotFound(err) {
+		return reconciler.ContinueProcessing()
+	}
+	if err != nil {
+		return reconciler.RequeueWithError(fmt.Errorf("getting pod %s for cleanup check: %w", podName, err))
+	}
+
+	cleanupAfterStr, ok := pod.Annotations[v1alpha1.ValidationAnnotationCleanupAfter]
+	if !ok {
+		return reconciler.ContinueProcessing()
+	}
+
+	cleanupAfter, err := time.Parse(time.RFC3339, cleanupAfterStr)
+	if err != nil {
+		h.logger.Error(err, "Invalid cleanup-after annotation, deleting pod immediately", "pod", podName)
+		if delErr := h.client.Delete(ctx, pod); delErr != nil && !apierror.IsNotFound(delErr) {
+			return reconciler.RequeueWithError(fmt.Errorf("deleting pod %s with invalid cleanup annotation: %w", podName, delErr))
+		}
+		return reconciler.ContinueProcessing()
+	}
+
+	remaining := time.Until(cleanupAfter)
+	if remaining > 0 {
+		h.logger.Info("Pod retained for debugging, cleanup pending", "pod", podName, "cleanupAfter", cleanupAfterStr, "remaining", remaining)
+		return reconciler.RequeueAfter(remaining, nil)
+	}
+
+	h.logger.Info("Cleanup TTL expired, deleting retained pod", "pod", podName)
+	if err := h.client.Delete(ctx, pod); err != nil && !apierror.IsNotFound(err) {
+		return reconciler.RequeueWithError(fmt.Errorf("deleting expired pod %s: %w", podName, err))
+	}
+
+	h.recorder.Eventf(h.validation, corev1.EventTypeNormal, "PodCleanedUp", "Deleted retained debug pod %s after 24h TTL", podName)
 
 	return reconciler.ContinueProcessing()
 }

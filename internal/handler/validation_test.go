@@ -959,6 +959,188 @@ func TestNewValidationHandler_NoMock(t *testing.T) {
 	}
 }
 
+// --- CleanupExpiredPod ---
+
+func TestCleanupExpiredPod_DeletesExpiredPod(t *testing.T) {
+	validation := newTestValidation("cleanup-expired", "default")
+	validation.Status.Phase = v1alpha1.ValidationPhaseFailed
+	validation.Status.PodName = "cleanup-expired-run-0"
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cleanup-expired-run-0",
+			Namespace: "default",
+			Annotations: map[string]string{
+				v1alpha1.ValidationAnnotationCleanupAfter: time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
+			},
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Containers:    []corev1.Container{{Name: "ci-runner", Image: "busybox:latest"}},
+		},
+	}
+
+	s := newScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&v1alpha1.Validation{}).
+		WithObjects(validation, pod).
+		Build()
+	recorder := record.NewFakeRecorder(10)
+	h := &ValidationHandler{
+		validation: validation,
+		logger:     logr.Discard(),
+		client:     fakeClient,
+		recorder:   recorder,
+	}
+
+	result, err := h.CleanupExpiredPod(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.CancelRequest || result.RequeueRequest {
+		t.Fatal("expected ContinueProcessing")
+	}
+
+	// Pod should be deleted.
+	deletedPod := &corev1.Pod{}
+	err = fakeClient.Get(context.Background(), client.ObjectKey{Name: pod.Name, Namespace: pod.Namespace}, deletedPod)
+	if err == nil {
+		t.Error("expected pod to be deleted after TTL expired, but it still exists")
+	}
+}
+
+func TestCleanupExpiredPod_RequeuesForNonExpiredPod(t *testing.T) {
+	validation := newTestValidation("cleanup-pending", "default")
+	validation.Status.Phase = v1alpha1.ValidationPhaseFailed
+	validation.Status.PodName = "cleanup-pending-run-0"
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cleanup-pending-run-0",
+			Namespace: "default",
+			Annotations: map[string]string{
+				v1alpha1.ValidationAnnotationCleanupAfter: time.Now().Add(12 * time.Hour).Format(time.RFC3339),
+			},
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Containers:    []corev1.Container{{Name: "ci-runner", Image: "busybox:latest"}},
+		},
+	}
+
+	s := newScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&v1alpha1.Validation{}).
+		WithObjects(validation, pod).
+		Build()
+	recorder := record.NewFakeRecorder(10)
+	h := &ValidationHandler{
+		validation: validation,
+		logger:     logr.Discard(),
+		client:     fakeClient,
+		recorder:   recorder,
+	}
+
+	result, err := h.CleanupExpiredPod(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.RequeueRequest {
+		t.Fatal("expected Requeue for non-expired pod")
+	}
+
+	// Requeue delay should be roughly 12 hours (between 11h and 13h tolerance).
+	if result.RequeueDelay < 11*time.Hour || result.RequeueDelay > 13*time.Hour {
+		t.Errorf("expected requeue delay around 12h, got %v", result.RequeueDelay)
+	}
+
+	// Pod should still exist.
+	retainedPod := &corev1.Pod{}
+	err = fakeClient.Get(context.Background(), client.ObjectKey{Name: pod.Name, Namespace: pod.Namespace}, retainedPod)
+	if err != nil {
+		t.Fatalf("expected pod to still exist, but got error: %v", err)
+	}
+}
+
+func TestCleanupExpiredPod_NoPodName(t *testing.T) {
+	validation := newTestValidation("cleanup-no-pod", "default")
+	validation.Status.Phase = v1alpha1.ValidationPhaseFailed
+	validation.Status.PodName = ""
+
+	h, _, _ := newHandler(validation)
+
+	result, err := h.CleanupExpiredPod(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.CancelRequest || result.RequeueRequest {
+		t.Fatal("expected ContinueProcessing")
+	}
+}
+
+func TestCleanupExpiredPod_PodWithoutAnnotation(t *testing.T) {
+	validation := newTestValidation("cleanup-no-ann", "default")
+	validation.Status.Phase = v1alpha1.ValidationPhaseFailed
+	validation.Status.PodName = "cleanup-no-ann-run-0"
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cleanup-no-ann-run-0",
+			Namespace: "default",
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Containers:    []corev1.Container{{Name: "ci-runner", Image: "busybox:latest"}},
+		},
+	}
+
+	s := newScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&v1alpha1.Validation{}).
+		WithObjects(validation, pod).
+		Build()
+	recorder := record.NewFakeRecorder(10)
+	h := &ValidationHandler{
+		validation: validation,
+		logger:     logr.Discard(),
+		client:     fakeClient,
+		recorder:   recorder,
+	}
+
+	result, err := h.CleanupExpiredPod(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.CancelRequest || result.RequeueRequest {
+		t.Fatal("expected ContinueProcessing")
+	}
+
+	// Pod should still exist (not annotated, so skip).
+	retainedPod := &corev1.Pod{}
+	err = fakeClient.Get(context.Background(), client.ObjectKey{Name: pod.Name, Namespace: pod.Namespace}, retainedPod)
+	if err != nil {
+		t.Fatalf("expected pod to still exist, but got error: %v", err)
+	}
+}
+
+func TestCleanupExpiredPod_NotFailed(t *testing.T) {
+	validation := newTestValidation("cleanup-running", "default")
+	validation.Status.Phase = v1alpha1.ValidationPhaseRunning
+
+	h, _, _ := newHandler(validation)
+
+	result, err := h.CleanupExpiredPod(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.CancelRequest || result.RequeueRequest {
+		t.Fatal("expected ContinueProcessing")
+	}
+}
+
 // --- helpers ---
 
 func assertCondition(t *testing.T, conditions []metav1.Condition, condType string, status metav1.ConditionStatus) {

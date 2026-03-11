@@ -56,6 +56,21 @@ func (mr *MockValidationHandlerInterfaceMockRecorder) CheckPodStatus(ctx any) *g
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CheckPodStatus", reflect.TypeOf((*MockValidationHandlerInterface)(nil).CheckPodStatus), ctx)
 }
 
+// CleanupExpiredPod mocks base method.
+func (m *MockValidationHandlerInterface) CleanupExpiredPod(ctx context.Context) (reconciler.OperationResult, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CleanupExpiredPod", ctx)
+	ret0, _ := ret[0].(reconciler.OperationResult)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CleanupExpiredPod indicates an expected call of CleanupExpiredPod.
+func (mr *MockValidationHandlerInterfaceMockRecorder) CleanupExpiredPod(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CleanupExpiredPod", reflect.TypeOf((*MockValidationHandlerInterface)(nil).CleanupExpiredPod), ctx)
+}
+
 // EnsureInitialized mocks base method.
 func (m *MockValidationHandlerInterface) EnsureInitialized(ctx context.Context) (reconciler.OperationResult, error) {
 	m.ctrl.T.Helper()
