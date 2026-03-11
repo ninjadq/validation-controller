@@ -338,6 +338,12 @@ func (h *ValidationHandler) CheckPodStatus(ctx context.Context) (reconciler.Oper
 
 		h.validation.Status.Phase = v1alpha1.ValidationPhaseFailed
 
+		if err := h.client.Status().Update(ctx, h.validation); err != nil {
+			return reconciler.RequeueWithError(fmt.Errorf("updating status after pod failed: %w", err))
+		}
+
+		h.recorder.Eventf(h.validation, corev1.EventTypeWarning, "TestFailed", "Validation test failed in pod %s: %s", podName, failureMessage)
+
 		retriesExhausted := h.validation.Status.RetryCount >= h.validation.Spec.MaxRetries
 		if retriesExhausted {
 			// Keep the pod for debugging — annotate with a 24h cleanup deadline.
@@ -355,12 +361,6 @@ func (h *ValidationHandler) CheckPodStatus(ctx context.Context) (reconciler.Oper
 				return reconciler.RequeueWithError(fmt.Errorf("deleting failed pod %s: %w", podName, err))
 			}
 		}
-
-		if err := h.client.Status().Update(ctx, h.validation); err != nil {
-			return reconciler.RequeueWithError(fmt.Errorf("updating status after pod failed: %w", err))
-		}
-
-		h.recorder.Eventf(h.validation, corev1.EventTypeWarning, "TestFailed", "Validation test failed in pod %s: %s", podName, failureMessage)
 
 		return reconciler.ContinueProcessing()
 

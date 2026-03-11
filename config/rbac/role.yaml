@@ -20,6 +20,7 @@ rules:
   - delete
   - get
   - list
+  - update
   - watch
 - apiGroups:
   - validation.devinfra.io

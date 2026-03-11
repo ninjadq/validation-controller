@@ -43,7 +43,7 @@ type ValidationReconciler struct {
 // +kubebuilder:rbac:groups=validation.devinfra.io,resources=validations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=validation.devinfra.io,resources=validations/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=validation.devinfra.io,resources=validations/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile fetches the Validation CR and delegates lifecycle management to the handler.
