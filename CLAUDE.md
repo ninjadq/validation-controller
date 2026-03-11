@@ -21,10 +21,12 @@ ValidationReconciler → ValidationHandler (interface) → Handler Implementatio
 The reconciler is in `internal/controller/` and delegates to a handler interface in `internal/handler/`. The handler implements sequential operations:
 
 1. **EnsureInitialized** — Set phase to Pending, initialize conditions
-2. **EnsurePodExists** — Create CI pod with owner reference
-3. **CheckPodStatus** — Monitor pod, update conditions, clean up on completion
-4. **HandleRetry** — Retry on failure if retries remain
-5. **UpdatePhase** — Stop processing on terminal phases
+2. **CleanupExpiredPod** — Delete retained debug pods after 24h TTL expires
+3. **EnsureSpecCurrent** — Detect spec changes and reset
+4. **EnsurePodExists** — Create CI pod with owner reference
+5. **CheckPodStatus** — Monitor pod, update conditions; retain last failed pod for 24h if no retries remain
+6. **HandleRetry** — Retry on failure if retries remain
+7. **UpdatePhase** — Stop processing on terminal phases
 
 ### Key Design Decisions
 
@@ -32,6 +34,7 @@ The reconciler is in `internal/controller/` and delegates to a handler interface
 - **Pod-based** — Uses raw pods (not Jobs) for simplicity
 - **VALIDATION_PR_URL env var** — Auto-injected into the CI container
 - **Container name forced to "ci-runner"** — Regardless of user input in template
+- **Failed pod retention** — Last failed pod (when retries exhausted) is kept for 24h for debugging, then cleaned up via annotation-based TTL
 
 ### Lifecycle Phases
 
