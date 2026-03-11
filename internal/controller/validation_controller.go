@@ -68,6 +68,7 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 func (r *ValidationReconciler) ReconcileHandler(ctx context.Context, h handler.ValidationHandlerInterface) (ctrl.Result, error) {
 	operations := []reconciler.ReconcileOperation{
 		h.EnsureInitialized,
+		h.CleanupExpiredPod,
 		h.EnsureSpecCurrent,
 		h.EnsurePodExists,
 		h.CheckPodStatus,
