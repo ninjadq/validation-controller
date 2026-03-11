@@ -125,6 +125,7 @@ func TestEnsureInitialized_AlreadyInitialized(t *testing.T) {
 func TestEnsurePodExists(t *testing.T) {
 	validation := newTestValidation("pod-test", "default")
 	validation.Status.Phase = v1alpha1.ValidationPhasePending
+	validation.Status.RetryCount = 0
 
 	h, fakeClient, _ := newHandler(validation)
 
@@ -147,9 +148,10 @@ func TestEnsurePodExists(t *testing.T) {
 
 	pod := podList.Items[0]
 
-	// Pod name should start with "pod-test-run-".
-	if len(pod.Name) == 0 {
-		t.Fatal("pod name is empty")
+	// Pod name should be deterministic: "pod-test-run-0".
+	expectedPodName := "pod-test-run-0"
+	if pod.Name != expectedPodName {
+		t.Errorf("expected pod name %q, got %q", expectedPodName, pod.Name)
 	}
 
 	// Container named "ci-runner".
@@ -195,8 +197,57 @@ func TestEnsurePodExists(t *testing.T) {
 	if updated.Status.Phase != v1alpha1.ValidationPhaseRunning {
 		t.Errorf("expected phase %q, got %q", v1alpha1.ValidationPhaseRunning, updated.Status.Phase)
 	}
-	if updated.Status.PodName == "" {
-		t.Error("expected PodName to be set")
+	if updated.Status.PodName != expectedPodName {
+		t.Errorf("expected PodName %q, got %q", expectedPodName, updated.Status.PodName)
+	}
+}
+
+func TestEnsurePodExists_AlreadyExists(t *testing.T) {
+	validation := newTestValidation("pod-exists", "default")
+	validation.Status.Phase = v1alpha1.ValidationPhasePending
+	validation.Status.RetryCount = 0
+
+	// Pre-create the pod that would be generated (deterministic name).
+	existingPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-exists-run-0",
+			Namespace: "default",
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Containers:    []corev1.Container{{Name: "ci-runner", Image: "busybox:latest"}},
+		},
+	}
+
+	s := newScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&v1alpha1.Validation{}).
+		WithObjects(validation, existingPod).
+		Build()
+	recorder := record.NewFakeRecorder(10)
+	h := &ValidationHandler{
+		validation: validation,
+		logger:     logr.Discard(),
+		client:     fakeClient,
+		recorder:   recorder,
+	}
+
+	result, err := h.EnsurePodExists(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.CancelRequest || result.RequeueRequest {
+		t.Fatal("expected ContinueProcessing")
+	}
+
+	// Status should still be updated to Running.
+	updated := &v1alpha1.Validation{}
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(validation), updated); err != nil {
+		t.Fatalf("failed to get updated validation: %v", err)
+	}
+	if updated.Status.Phase != v1alpha1.ValidationPhaseRunning {
+		t.Errorf("expected phase %q, got %q", v1alpha1.ValidationPhaseRunning, updated.Status.Phase)
 	}
 }
 
@@ -220,11 +271,11 @@ func TestEnsurePodExists_NotPending(t *testing.T) {
 func TestCheckPodStatus_Succeeded(t *testing.T) {
 	validation := newTestValidation("check-success", "default")
 	validation.Status.Phase = v1alpha1.ValidationPhaseRunning
-	validation.Status.PodName = "check-success-run-abc12"
+	validation.Status.PodName = "check-success-run-0"
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "check-success-run-abc12",
+			Name:      "check-success-run-0",
 			Namespace: "default",
 		},
 		Status: corev1.PodStatus{
@@ -278,11 +329,11 @@ func TestCheckPodStatus_Succeeded(t *testing.T) {
 func TestCheckPodStatus_Failed(t *testing.T) {
 	validation := newTestValidation("check-fail", "default")
 	validation.Status.Phase = v1alpha1.ValidationPhaseRunning
-	validation.Status.PodName = "check-fail-run-xyz98"
+	validation.Status.PodName = "check-fail-run-0"
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "check-fail-run-xyz98",
+			Name:      "check-fail-run-0",
 			Namespace: "default",
 		},
 		Status: corev1.PodStatus{
@@ -345,11 +396,11 @@ func TestCheckPodStatus_Failed(t *testing.T) {
 func TestCheckPodStatus_Running(t *testing.T) {
 	validation := newTestValidation("check-running", "default")
 	validation.Status.Phase = v1alpha1.ValidationPhaseRunning
-	validation.Status.PodName = "check-running-run-abc12"
+	validation.Status.PodName = "check-running-run-0"
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "check-running-run-abc12",
+			Name:      "check-running-run-0",
 			Namespace: "default",
 		},
 		Status: corev1.PodStatus{
@@ -406,6 +457,19 @@ func TestCheckPodStatus_PodNotFound(t *testing.T) {
 	}
 }
 
+func TestCheckPodStatus_EmptyPodName(t *testing.T) {
+	validation := newTestValidation("check-empty-name", "default")
+	validation.Status.Phase = v1alpha1.ValidationPhaseRunning
+	validation.Status.PodName = "" // Empty pod name
+
+	h, _, _ := newHandler(validation)
+
+	_, err := h.CheckPodStatus(context.Background())
+	if err == nil {
+		t.Fatal("expected error for empty pod name, got nil")
+	}
+}
+
 // --- HandleRetry ---
 
 func TestHandleRetry_WithRetriesLeft(t *testing.T) {
@@ -420,8 +484,9 @@ func TestHandleRetry_WithRetriesLeft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.CancelRequest || result.RequeueRequest {
-		t.Fatal("expected ContinueProcessing")
+	// HandleRetry should return Requeue so the next reconcile creates the pod immediately.
+	if !result.RequeueRequest {
+		t.Fatal("expected Requeue, got no requeue")
 	}
 
 	// Verify retryCount incremented and phase reset.

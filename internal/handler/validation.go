@@ -7,13 +7,13 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierror "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/validation-controller/api/v1alpha1"
-	"github.com/validation-controller/internal/utils/rand"
 	"github.com/validation-controller/internal/utils/reconciler"
 )
 
@@ -69,28 +69,10 @@ func (h *ValidationHandler) EnsureInitialized(ctx context.Context) (reconciler.O
 
 	h.validation.Status.Phase = v1alpha1.ValidationPhasePending
 
-	now := metav1.Now()
-	setCondition(&h.validation.Status, metav1.Condition{
-		Type:               v1alpha1.ValidationConditionPodCreated,
-		Status:             metav1.ConditionFalse,
-		Reason:             "Initializing",
-		Message:            "Validation is being initialized",
-		LastTransitionTime: now,
-	})
-	setCondition(&h.validation.Status, metav1.Condition{
-		Type:               v1alpha1.ValidationConditionTestCompleted,
-		Status:             metav1.ConditionFalse,
-		Reason:             "Initializing",
-		Message:            "Validation is being initialized",
-		LastTransitionTime: now,
-	})
-	setCondition(&h.validation.Status, metav1.Condition{
-		Type:               v1alpha1.ValidationConditionTestPassed,
-		Status:             metav1.ConditionFalse,
-		Reason:             "Initializing",
-		Message:            "Validation is being initialized",
-		LastTransitionTime: now,
-	})
+	gen := h.validation.Generation
+	h.setCondition(v1alpha1.ValidationConditionPodCreated, metav1.ConditionFalse, "Initializing", "Validation is being initialized", gen)
+	h.setCondition(v1alpha1.ValidationConditionTestCompleted, metav1.ConditionFalse, "Initializing", "Validation is being initialized", gen)
+	h.setCondition(v1alpha1.ValidationConditionTestPassed, metav1.ConditionFalse, "Initializing", "Validation is being initialized", gen)
 
 	if err := h.client.Status().Update(ctx, h.validation); err != nil {
 		return reconciler.RequeueWithError(fmt.Errorf("updating status during initialization: %w", err))
@@ -102,6 +84,7 @@ func (h *ValidationHandler) EnsureInitialized(ctx context.Context) (reconciler.O
 }
 
 // EnsurePodExists creates a validation pod if the Validation is in Pending phase.
+// Pod names are deterministic based on retry count, making creation idempotent.
 func (h *ValidationHandler) EnsurePodExists(ctx context.Context) (reconciler.OperationResult, error) {
 	if h.validation.Status.Phase != v1alpha1.ValidationPhasePending {
 		return reconciler.ContinueProcessing()
@@ -138,19 +121,19 @@ func (h *ValidationHandler) EnsurePodExists(ctx context.Context) (reconciler.Ope
 	}
 
 	if err := h.client.Create(ctx, pod); err != nil {
-		return reconciler.RequeueWithError(fmt.Errorf("creating validation pod: %w", err))
+		if !apierror.IsAlreadyExists(err) {
+			return reconciler.RequeueWithError(fmt.Errorf("creating validation pod: %w", err))
+		}
+		// Pod already exists (e.g., status update failed on previous reconcile).
+		// Proceed to update status — the pod is already running.
+		h.logger.Info("Pod already exists, proceeding to update status", "pod", podName)
 	}
 
 	h.validation.Status.PodName = podName
 	h.validation.Status.Phase = v1alpha1.ValidationPhaseRunning
 
-	setCondition(&h.validation.Status, metav1.Condition{
-		Type:               v1alpha1.ValidationConditionPodCreated,
-		Status:             metav1.ConditionTrue,
-		Reason:             "PodCreated",
-		Message:            fmt.Sprintf("Pod %s created successfully", podName),
-		LastTransitionTime: metav1.Now(),
-	})
+	gen := h.validation.Generation
+	h.setCondition(v1alpha1.ValidationConditionPodCreated, metav1.ConditionTrue, "PodCreated", fmt.Sprintf("Pod %s created successfully", podName), gen)
 
 	if err := h.client.Status().Update(ctx, h.validation); err != nil {
 		return reconciler.RequeueWithError(fmt.Errorf("updating status after pod creation: %w", err))
@@ -168,6 +151,10 @@ func (h *ValidationHandler) CheckPodStatus(ctx context.Context) (reconciler.Oper
 	}
 
 	podName := h.validation.Status.PodName
+	if podName == "" {
+		return reconciler.RequeueWithError(fmt.Errorf("validation is in Running phase but has no pod name"))
+	}
+
 	h.logger.Info("Checking pod status", "pod", podName)
 
 	pod := &corev1.Pod{}
@@ -181,21 +168,9 @@ func (h *ValidationHandler) CheckPodStatus(ctx context.Context) (reconciler.Oper
 
 		h.validation.Status.Phase = v1alpha1.ValidationPhaseFailed
 
-		now := metav1.Now()
-		setCondition(&h.validation.Status, metav1.Condition{
-			Type:               v1alpha1.ValidationConditionTestCompleted,
-			Status:             metav1.ConditionTrue,
-			Reason:             "PodNotFound",
-			Message:            fmt.Sprintf("Pod %s was not found", podName),
-			LastTransitionTime: now,
-		})
-		setCondition(&h.validation.Status, metav1.Condition{
-			Type:               v1alpha1.ValidationConditionTestPassed,
-			Status:             metav1.ConditionFalse,
-			Reason:             "PodNotFound",
-			Message:            fmt.Sprintf("Pod %s was not found", podName),
-			LastTransitionTime: now,
-		})
+		gen := h.validation.Generation
+		h.setCondition(v1alpha1.ValidationConditionTestCompleted, metav1.ConditionTrue, "PodNotFound", fmt.Sprintf("Pod %s was not found", podName), gen)
+		h.setCondition(v1alpha1.ValidationConditionTestPassed, metav1.ConditionFalse, "PodNotFound", fmt.Sprintf("Pod %s was not found", podName), gen)
 
 		if err := h.client.Status().Update(ctx, h.validation); err != nil {
 			return reconciler.RequeueWithError(fmt.Errorf("updating status after pod not found: %w", err))
@@ -210,34 +185,23 @@ func (h *ValidationHandler) CheckPodStatus(ctx context.Context) (reconciler.Oper
 		return reconciler.RequeueWithError(fmt.Errorf("getting pod %s: %w", podName, err))
 	}
 
+	gen := h.validation.Generation
+
 	switch pod.Status.Phase {
 	case corev1.PodSucceeded:
 		h.logger.Info("Pod succeeded", "pod", podName)
 
-		now := metav1.Now()
-		setCondition(&h.validation.Status, metav1.Condition{
-			Type:               v1alpha1.ValidationConditionTestCompleted,
-			Status:             metav1.ConditionTrue,
-			Reason:             "TestSucceeded",
-			Message:            "Validation test completed successfully",
-			LastTransitionTime: now,
-		})
-		setCondition(&h.validation.Status, metav1.Condition{
-			Type:               v1alpha1.ValidationConditionTestPassed,
-			Status:             metav1.ConditionTrue,
-			Reason:             "TestPassed",
-			Message:            "Validation test passed",
-			LastTransitionTime: now,
-		})
+		h.setCondition(v1alpha1.ValidationConditionTestCompleted, metav1.ConditionTrue, "TestSucceeded", "Validation test completed successfully", gen)
+		h.setCondition(v1alpha1.ValidationConditionTestPassed, metav1.ConditionTrue, "TestPassed", "Validation test passed", gen)
 
 		h.validation.Status.Phase = v1alpha1.ValidationPhaseSucceeded
 
-		if err := h.client.Status().Update(ctx, h.validation); err != nil {
-			return reconciler.RequeueWithError(fmt.Errorf("updating status after pod succeeded: %w", err))
+		if err := h.client.Delete(ctx, pod); err != nil && !apierror.IsNotFound(err) {
+			return reconciler.RequeueWithError(fmt.Errorf("deleting succeeded pod %s: %w", podName, err))
 		}
 
-		if err := h.client.Delete(ctx, pod); err != nil && !apierror.IsNotFound(err) {
-			h.logger.Error(err, "Failed to delete succeeded pod", "pod", podName)
+		if err := h.client.Status().Update(ctx, h.validation); err != nil {
+			return reconciler.RequeueWithError(fmt.Errorf("updating status after pod succeeded: %w", err))
 		}
 
 		h.recorder.Eventf(h.validation, corev1.EventTypeNormal, "TestPassed", "Validation test passed in pod %s", podName)
@@ -249,30 +213,17 @@ func (h *ValidationHandler) CheckPodStatus(ctx context.Context) (reconciler.Oper
 
 		failureMessage := getPodFailureMessage(pod)
 
-		now := metav1.Now()
-		setCondition(&h.validation.Status, metav1.Condition{
-			Type:               v1alpha1.ValidationConditionTestCompleted,
-			Status:             metav1.ConditionTrue,
-			Reason:             "TestFailed",
-			Message:            "Validation test completed with failure",
-			LastTransitionTime: now,
-		})
-		setCondition(&h.validation.Status, metav1.Condition{
-			Type:               v1alpha1.ValidationConditionTestPassed,
-			Status:             metav1.ConditionFalse,
-			Reason:             "TestFailed",
-			Message:            failureMessage,
-			LastTransitionTime: now,
-		})
+		h.setCondition(v1alpha1.ValidationConditionTestCompleted, metav1.ConditionTrue, "TestFailed", "Validation test completed with failure", gen)
+		h.setCondition(v1alpha1.ValidationConditionTestPassed, metav1.ConditionFalse, "TestFailed", failureMessage, gen)
 
 		h.validation.Status.Phase = v1alpha1.ValidationPhaseFailed
 
-		if err := h.client.Status().Update(ctx, h.validation); err != nil {
-			return reconciler.RequeueWithError(fmt.Errorf("updating status after pod failed: %w", err))
+		if err := h.client.Delete(ctx, pod); err != nil && !apierror.IsNotFound(err) {
+			return reconciler.RequeueWithError(fmt.Errorf("deleting failed pod %s: %w", podName, err))
 		}
 
-		if err := h.client.Delete(ctx, pod); err != nil && !apierror.IsNotFound(err) {
-			h.logger.Error(err, "Failed to delete failed pod", "pod", podName)
+		if err := h.client.Status().Update(ctx, h.validation); err != nil {
+			return reconciler.RequeueWithError(fmt.Errorf("updating status after pod failed: %w", err))
 		}
 
 		h.recorder.Eventf(h.validation, corev1.EventTypeWarning, "TestFailed", "Validation test failed in pod %s: %s", podName, failureMessage)
@@ -303,28 +254,11 @@ func (h *ValidationHandler) HandleRetry(ctx context.Context) (reconciler.Operati
 	h.validation.Status.Phase = v1alpha1.ValidationPhasePending
 	h.validation.Status.PodName = ""
 
-	now := metav1.Now()
-	setCondition(&h.validation.Status, metav1.Condition{
-		Type:               v1alpha1.ValidationConditionPodCreated,
-		Status:             metav1.ConditionFalse,
-		Reason:             "Retrying",
-		Message:            fmt.Sprintf("Retrying validation, attempt %d of %d", h.validation.Status.RetryCount, h.validation.Spec.MaxRetries),
-		LastTransitionTime: now,
-	})
-	setCondition(&h.validation.Status, metav1.Condition{
-		Type:               v1alpha1.ValidationConditionTestCompleted,
-		Status:             metav1.ConditionFalse,
-		Reason:             "Retrying",
-		Message:            fmt.Sprintf("Retrying validation, attempt %d of %d", h.validation.Status.RetryCount, h.validation.Spec.MaxRetries),
-		LastTransitionTime: now,
-	})
-	setCondition(&h.validation.Status, metav1.Condition{
-		Type:               v1alpha1.ValidationConditionTestPassed,
-		Status:             metav1.ConditionFalse,
-		Reason:             "Retrying",
-		Message:            fmt.Sprintf("Retrying validation, attempt %d of %d", h.validation.Status.RetryCount, h.validation.Spec.MaxRetries),
-		LastTransitionTime: now,
-	})
+	gen := h.validation.Generation
+	retryMsg := fmt.Sprintf("Retrying validation, attempt %d of %d", h.validation.Status.RetryCount, h.validation.Spec.MaxRetries)
+	h.setCondition(v1alpha1.ValidationConditionPodCreated, metav1.ConditionFalse, "Retrying", retryMsg, gen)
+	h.setCondition(v1alpha1.ValidationConditionTestCompleted, metav1.ConditionFalse, "Retrying", retryMsg, gen)
+	h.setCondition(v1alpha1.ValidationConditionTestPassed, metav1.ConditionFalse, "Retrying", retryMsg, gen)
 
 	if err := h.client.Status().Update(ctx, h.validation); err != nil {
 		return reconciler.RequeueWithError(fmt.Errorf("updating status during retry: %w", err))
@@ -332,7 +266,7 @@ func (h *ValidationHandler) HandleRetry(ctx context.Context) (reconciler.Operati
 
 	h.recorder.Eventf(h.validation, corev1.EventTypeNormal, "Retrying", "Retrying validation, attempt %d of %d", h.validation.Status.RetryCount, h.validation.Spec.MaxRetries)
 
-	return reconciler.ContinueProcessing()
+	return reconciler.Requeue()
 }
 
 // UpdatePhase stops processing if the Validation has reached a terminal phase.
@@ -344,23 +278,16 @@ func (h *ValidationHandler) UpdatePhase(_ context.Context) (reconciler.Operation
 	return reconciler.ContinueProcessing()
 }
 
-// setCondition updates an existing condition or appends a new one. LastTransitionTime is only
-// updated when the condition status actually changes.
-func setCondition(status *v1alpha1.ValidationStatus, condition metav1.Condition) {
-	for i, existing := range status.Conditions {
-		if existing.Type == condition.Type {
-			if existing.Status != condition.Status {
-				status.Conditions[i] = condition
-			} else {
-				// Status unchanged: preserve the original transition time.
-				status.Conditions[i].Reason = condition.Reason
-				status.Conditions[i].Message = condition.Message
-				status.Conditions[i].LastTransitionTime = existing.LastTransitionTime
-			}
-			return
-		}
-	}
-	status.Conditions = append(status.Conditions, condition)
+// setCondition updates or appends a condition using the standard apimeta.SetStatusCondition,
+// which correctly handles LastTransitionTime preservation and ObservedGeneration.
+func (h *ValidationHandler) setCondition(condType string, status metav1.ConditionStatus, reason, message string, observedGeneration int64) {
+	apimeta.SetStatusCondition(&h.validation.Status.Conditions, metav1.Condition{
+		Type:               condType,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: observedGeneration,
+	})
 }
 
 // getPodFailureMessage extracts exit code information from the pod's container statuses.
@@ -373,10 +300,12 @@ func getPodFailureMessage(pod *corev1.Pod) string {
 	return "Pod failed with unknown exit code"
 }
 
-// generatePodName creates a pod name with a random suffix, truncated to fit the 63-char limit.
+// generatePodName creates a deterministic pod name based on the retry count.
+// This makes pod creation idempotent — if a status update fails after pod creation,
+// the next reconcile will attempt to create the same-named pod and get AlreadyExists.
 func (h *ValidationHandler) generatePodName() string {
-	suffix := rand.GenerateRandomString(5)
 	prefix := h.validation.Name + "-run-"
+	suffix := fmt.Sprintf("%d", h.validation.Status.RetryCount)
 	maxLen := 63
 	if len(prefix)+len(suffix) > maxLen {
 		prefix = prefix[:maxLen-len(suffix)]

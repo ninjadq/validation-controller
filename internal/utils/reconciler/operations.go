@@ -15,10 +15,6 @@ type OperationResult struct {
 	CancelRequest  bool
 }
 
-func (r OperationResult) RequeueOrCancel() bool {
-	return r.RequeueRequest || r.CancelRequest
-}
-
 func ContinueOperationResult() OperationResult {
 	return OperationResult{
 		RequeueDelay:   0,
@@ -26,6 +22,7 @@ func ContinueOperationResult() OperationResult {
 		CancelRequest:  false,
 	}
 }
+
 func StopOperationResult() OperationResult {
 	return OperationResult{
 		RequeueDelay:   0,
@@ -35,40 +32,21 @@ func StopOperationResult() OperationResult {
 }
 
 func StopProcessing() (OperationResult, error) {
-	result := StopOperationResult()
-	return result, nil
+	return StopOperationResult(), nil
 }
 
-func Requeue() (result OperationResult, err error) {
-	result = OperationResult{
+func Requeue() (OperationResult, error) {
+	return OperationResult{
 		RequeueDelay:   DefaultRequeueDelay,
 		RequeueRequest: true,
 		CancelRequest:  false,
-	}
-	return result, nil
+	}, nil
 }
 
 func RequeueWithError(err error) (OperationResult, error) {
-	result := OperationResult{
+	return OperationResult{
 		RequeueDelay:   DefaultRequeueDelay,
 		RequeueRequest: true,
-		CancelRequest:  false,
-	}
-	return result, err
-}
-
-func RequeueOnErrorOrStop(err error) (OperationResult, error) {
-	return OperationResult{
-		RequeueDelay:   DefaultRequeueDelay,
-		RequeueRequest: false,
-		CancelRequest:  true,
-	}, err
-}
-
-func RequeueOnErrorOrContinue(err error) (OperationResult, error) {
-	return OperationResult{
-		RequeueDelay:   DefaultRequeueDelay,
-		RequeueRequest: false,
 		CancelRequest:  false,
 	}, err
 }
@@ -80,6 +58,7 @@ func RequeueAfter(delay time.Duration, err error) (OperationResult, error) {
 		CancelRequest:  false,
 	}, err
 }
+
 func ContinueProcessing() (OperationResult, error) {
 	return ContinueOperationResult(), nil
 }

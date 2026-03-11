@@ -73,7 +73,6 @@ The reconciler is in `internal/controller/` and delegates to a handler interface
 - `internal/handler/validation.go` — Handler interface and business logic
 - `internal/handler/mocks/` — Generated mocks for testing
 - `internal/utils/reconciler/operations.go` — Reconciliation operation helpers
-- `internal/utils/rand/rand_string.go` — Random string generator for pod naming
 - `config/crd/bases/` — Generated CRD YAML
 - `config/rbac/` — Generated RBAC manifests
 
