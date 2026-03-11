@@ -4,13 +4,13 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 ## Project Overview
 
-The Validation Controller is a Kubernetes operator built with kubebuilder v4 that triggers pods to run CI tests for Azure DevOps pull requests. Users create a `Validation` Custom Resource specifying a PR URL and container, and the controller manages the full lifecycle: pod creation, status monitoring, retry on failure, and cleanup.
+The Validation Controller is a Kubernetes operator built with kubebuilder v4 that triggers pods to run CI tests for Azure DevOps pull requests. Users create a `Validation` Custom Resource specifying a PR URL and container template, and the controller manages the full lifecycle: pod creation, status monitoring, retry on failure, and cleanup.
 
 ## Architecture
 
 The controller manages one Custom Resource Definition in the `validation.devinfra.io` API group:
 
-**Validation** — Represents a CI test run for a pull request. Contains the PR URL, container spec, and retry configuration.
+**Validation** — Represents a CI test run for a pull request. Contains the PR URL, container template spec, and retry configuration.
 
 ### Controller Architecture Pattern
 
@@ -31,7 +31,7 @@ The reconciler is in `internal/controller/` and delegates to a handler interface
 - **No finalizers** — Owner references handle cascade deletion
 - **Pod-based** — Uses raw pods (not Jobs) for simplicity
 - **VALIDATION_PR_URL env var** — Auto-injected into the CI container
-- **Container name forced to "ci-runner"** — Regardless of user input
+- **Container name forced to "ci-runner"** — Regardless of user input in template
 
 ### Lifecycle Phases
 

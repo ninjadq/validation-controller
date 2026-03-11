@@ -5,7 +5,7 @@ metadata:
   namespace: default
 spec:
   prUrl: "https://dev.azure.com/my-org/my-project/_git/my-repo/pullrequest/123"
-  container:
+  template:
     image: "alpine:latest"
     command: ["sh", "-c", "echo 'Running CI tests for PR' && exit 0"]
   maxRetries: 1

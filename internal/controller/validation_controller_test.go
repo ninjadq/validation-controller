@@ -77,7 +77,7 @@ var _ = Describe("ValidationReconciler", func() {
 				},
 				Spec: v1alpha1.ValidationSpec{
 					PrUrl: "https://dev.azure.com/test/pr/1",
-					Container: corev1.Container{
+					Template: corev1.Container{
 						Name:  "test",
 						Image: "busybox",
 					},
@@ -112,7 +112,7 @@ var _ = Describe("ValidationReconciler", func() {
 				},
 				Spec: v1alpha1.ValidationSpec{
 					PrUrl: "https://dev.azure.com/test/pr/2",
-					Container: corev1.Container{
+					Template: corev1.Container{
 						Name:  "test",
 						Image: "busybox",
 					},
@@ -142,7 +142,7 @@ var _ = Describe("ValidationReconciler", func() {
 				},
 				Spec: v1alpha1.ValidationSpec{
 					PrUrl: "https://dev.azure.com/test/pr/3",
-					Container: corev1.Container{
+					Template: corev1.Container{
 						Name:  "test",
 						Image: "busybox",
 					},

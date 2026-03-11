@@ -156,7 +156,7 @@ func (h *ValidationHandler) EnsurePodExists(ctx context.Context) (reconciler.Ope
 
 	h.logger.Info("Creating validation pod")
 
-	container := h.validation.Spec.Container.DeepCopy()
+	container := h.validation.Spec.Template.DeepCopy()
 	container.Name = "ci-runner"
 	container.Env = append(container.Env, corev1.EnvVar{
 		Name:  "VALIDATION_PR_URL",
@@ -378,14 +378,14 @@ func (h *ValidationHandler) generatePodName() string {
 }
 
 // computeSpecHash computes a hash of the fields that should trigger a reset when changed.
-// Only Container and PrUrl are included — MaxRetries is intentionally excluded.
+// Only Template and PrUrl are included — MaxRetries is intentionally excluded.
 func (h *ValidationHandler) computeSpecHash() string {
 	data := struct {
-		Container corev1.Container `json:"container"`
-		PrUrl     string           `json:"prUrl"`
+		Template corev1.Container `json:"template"`
+		PrUrl    string           `json:"prUrl"`
 	}{
-		Container: h.validation.Spec.Container,
-		PrUrl:     h.validation.Spec.PrUrl,
+		Template: h.validation.Spec.Template,
+		PrUrl:    h.validation.Spec.PrUrl,
 	}
 	b, _ := json.Marshal(data)
 	sum := sha256.Sum256(b)

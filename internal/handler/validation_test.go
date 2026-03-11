@@ -33,7 +33,7 @@ func newTestValidation(name, namespace string) *v1alpha1.Validation {
 		},
 		Spec: v1alpha1.ValidationSpec{
 			PrUrl: "https://dev.azure.com/org/project/_git/repo/pullrequest/42",
-			Container: corev1.Container{
+			Template: corev1.Container{
 				Name:  "test",
 				Image: "busybox:latest",
 			},
@@ -271,7 +271,7 @@ func TestEnsureSpecCurrent_ContainerImageChange(t *testing.T) {
 	oldHash := h.computeSpecHash()
 	validation.Status.SpecHash = oldHash
 
-	validation.Spec.Container.Image = "alpine:3.18"
+	validation.Spec.Template.Image = "alpine:3.18"
 
 	h, fakeClient, _ := newHandler(validation)
 

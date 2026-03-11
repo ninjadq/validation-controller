@@ -36,7 +36,15 @@ spec:
             type: object
           spec:
             properties:
-              container:
+              maxRetries:
+                default: 0
+                format: int32
+                minimum: 0
+                type: integer
+              prUrl:
+                pattern: ^https://dev\.azure\.com/.+
+                type: string
+              template:
                 properties:
                   args:
                     items:
@@ -714,17 +722,9 @@ spec:
                 required:
                 - name
                 type: object
-              maxRetries:
-                default: 0
-                format: int32
-                minimum: 0
-                type: integer
-              prUrl:
-                pattern: ^https://dev\.azure\.com/.+
-                type: string
             required:
-            - container
             - prUrl
+            - template
             type: object
           status:
             properties:

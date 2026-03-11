@@ -43,7 +43,7 @@ type ValidationSpec struct {
 	// +kubebuilder:validation:Pattern=`^https://dev\.azure\.com/.+`
 	PrUrl string `json:"prUrl"`
 	// +kubebuilder:validation:Required
-	Container corev1.Container `json:"container"`
+	Template corev1.Container `json:"template"`
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=0

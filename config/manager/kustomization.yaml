@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: aksartifactsmsftprodeastusbk1.azurecr.io/validation-controller
-  newTag: v0.0.2
+  newTag: v0.0.4
