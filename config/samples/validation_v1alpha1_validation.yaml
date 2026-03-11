@@ -1,0 +1,11 @@
+apiVersion: validation.devinfra.io/v1alpha1
+kind: Validation
+metadata:
+  name: validation-sample
+  namespace: default
+spec:
+  prUrl: "https://dev.azure.com/my-org/my-project/_git/my-repo/pullrequest/123"
+  container:
+    image: "alpine:latest"
+    command: ["sh", "-c", "echo 'Running CI tests for PR' && exit 0"]
+  maxRetries: 1
